@@ -12,3 +12,8 @@
       - "https://www.atlasian.com"
       - "https://www.twitter.com"
       - "https://www.facebook.com"
+    Redis:
+      host: 172.17.0.3
+      port: 6379
+      password:
+      db: 0

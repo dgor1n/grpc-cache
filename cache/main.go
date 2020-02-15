@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/dgor1n/grpc-cache/proto"
+	"github.com/go-redis/redis"
 
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -18,6 +19,8 @@ type server struct {
 	MinTimeout       int
 	NumberOfRequests int
 	URLs             []string
+
+	Redis *redis.Client
 }
 
 func main() {
@@ -52,6 +55,19 @@ func (s *server) initConfig() {
 	s.NumberOfRequests = viper.GetInt("NumberOfRequests")
 	s.URLs = viper.GetStringSlice("URLs")
 
+	// Init redis connection.
+	client := redis.NewClient(&redis.Options{
+		Addr:     viper.GetString("Redis.host") + ":" + viper.GetString("Redis.port"),
+		Password: viper.GetString("Redis.password"),
+		DB:       viper.GetInt("Redis.db"),
+	})
+
+	_, err = client.Ping().Result()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	s.Redis = client
 }
 
 func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDataStreamServer) error {
