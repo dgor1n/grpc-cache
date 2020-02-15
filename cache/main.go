@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	pb "grpc-cache/proto"
+	pb "github.com/dgor1n/grpc-cache/proto"
 
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -51,17 +51,30 @@ func (s *server) initConfig() {
 	s.MinTimeout = viper.GetInt("MinTimeout")
 	s.NumberOfRequests = viper.GetInt("NumberOfRequests")
 	s.URLs = viper.GetStringSlice("URLs")
+
 }
 
 func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDataStreamServer) error {
 
+	defer log.Println("Done")
+
 	rand.Seed(time.Now().Unix()) // Initialize global pseudo random generator.
+	ch := make(chan string)
 
 	for i := 0; i < s.NumberOfRequests; i++ {
+		go s.processData(ch)
+	}
+
+	for i := 0; i < s.NumberOfRequests; i++ {
+		message := <-ch
 		stream.Send(&pb.Response{
-			Message: s.URLs[rand.Intn(len(s.URLs))],
+			Message: message,
 		})
 	}
 
 	return nil
+}
+
+func (s *server) processData(ch chan<- string) {
+	ch <- s.URLs[rand.Intn(len(s.URLs))]
 }
