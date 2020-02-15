@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package stream;
+
+service Stream {
+    rpc GetRandomDataStream(Request) returns (stream Response) {}
+}
+
+message Request {}
+
+message Response {
+    string message = 1;
+}
