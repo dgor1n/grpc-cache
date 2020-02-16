@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/dgor1n/grpc-cache/proto"
+
 	"github.com/go-redis/redis"
 
 	"github.com/spf13/viper"
@@ -68,13 +69,14 @@ func (s *server) initConfig() {
 	}
 
 	s.Redis = client
+
+	rand.Seed(time.Now().Unix()) // Initialize global pseudo random generator.
 }
 
 func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDataStreamServer) error {
 
 	defer log.Println("Done")
 
-	rand.Seed(time.Now().Unix()) // Initialize global pseudo random generator.
 	ch := make(chan string)
 
 	for i := 0; i < s.NumberOfRequests; i++ {
@@ -92,5 +94,28 @@ func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDa
 }
 
 func (s *server) processData(ch chan<- string) {
-	ch <- s.URLs[rand.Intn(len(s.URLs))]
+
+	url := s.URLs[rand.Intn(len(s.URLs))]
+
+	pid, err := s.Redis.Get(url).Result()
+	if err == redis.Nil {
+		ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
+		if err := s.Redis.SetNX(url, "pid", time.Duration(ttl)).Err(); err != nil {
+			log.Fatal(err)
+		}
+	} else if err != nil {
+		log.Fatal(err)
+	}
+
+	//if !res {
+	//	url, err = s.Redis.Get(url).Result()
+
+	//	log.Println("url from redis", url)
+	//	if err != nil {
+	//		log.Fatal(err)
+	//	}
+	//}
+
+	log.Println(url, pid)
+	ch <- url
 }

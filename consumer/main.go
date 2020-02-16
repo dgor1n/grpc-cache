@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 
 	pb "grpc-cache/proto"
 
@@ -12,6 +13,9 @@ import (
 )
 
 func main() {
+
+	defer log.Println("Done")
+
 	opts := []grpc.DialOption{
 		grpc.WithInsecure(),
 	}
@@ -26,21 +30,24 @@ func main() {
 
 	client := pb.NewStreamClient(conn)
 	request := &pb.Request{}
-	response, err := client.GetRandomDataStream(context.Background(), request)
-	if err != nil {
-		grpclog.Fatalf("fail to dial: %v", err)
-	}
 
-	for {
-		r, err := response.Recv()
+	for i := 0; i < 100; i++ {
+		response, err := client.GetRandomDataStream(context.Background(), request)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			grpclog.Fatalf("fail to read response: %v", err)
+			grpclog.Fatalf("fail to dial: %v", err)
 		}
 
-		fmt.Println(r.Message)
+		for {
+			r, err := response.Recv()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				grpclog.Fatalf("fail to read response: %v", err)
+			}
+
+			fmt.Println(r.Message)
+		}
 	}
 
 }
