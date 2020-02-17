@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 
-	pb "grpc-cache/proto"
+	pb "github.com/dgor1n/grpc-cache/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
