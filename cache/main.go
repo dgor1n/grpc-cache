@@ -1,9 +1,11 @@
 package main
 
 import (
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"time"
 
 	pb "github.com/dgor1n/grpc-cache/proto"
@@ -14,6 +16,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
 )
+
+const queue string = "queue"
 
 type server struct {
 	MaxTimeout       int
@@ -35,13 +39,13 @@ func main() {
 	grpcServer := grpc.NewServer(opts...)
 
 	srv := &server{}
-	srv.initConfig()
+	srv.Init()
 
 	pb.RegisterStreamServer(grpcServer, srv)
 	grpcServer.Serve(listener)
 }
 
-func (s *server) initConfig() {
+func (s *server) Init() {
 
 	viper.SetConfigName("config") // Name of config file (without extension)
 	viper.SetConfigType("yaml")   // REQUIRED if the config file does not have the extension in the name
@@ -95,27 +99,72 @@ func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDa
 
 func (s *server) processData(ch chan<- string) {
 
+	from := "redis cache"
+
+	// Can produce 2-3 requests with the same URL
+	// which will deadlock queue handler
 	url := s.URLs[rand.Intn(len(s.URLs))]
 
-	pid, err := s.Redis.Get(url).Result()
+	// Check if record exist in cache.
+	response, err := s.Redis.Get(url).Result()
 	if err == redis.Nil {
-		ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
-		if err := s.Redis.SetNX(url, "pid", time.Duration(ttl)).Err(); err != nil {
+
+	LOOP:
+		// Check queue
+		ok, err := s.Redis.SIsMember(queue, url).Result()
+		if err != nil {
 			log.Fatal(err)
 		}
+
+		// Start DDOS
+		if ok {
+			time.Sleep(time.Second * 1)
+			//log.Println("Already in queue", url)
+			goto LOOP
+		}
+
+		// todo check 1/0/err
+		// log.Println("Add to queue", url)
+		res, err := s.Redis.SAdd(queue, url).Result()
+		if err != nil || res == 0 {
+			goto LOOP
+		}
+
+		response = curl(url)
+		ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
+
+		// Set record to redis with expiration time.
+		if err := s.Redis.SetNX(url, response, time.Duration(ttl)).Err(); err != nil {
+			response = err.Error()
+		}
+
+		// todo check 1/0/err
+		//log.Println("Remove from queue", url)
+		s.Redis.SRem(queue, url)
+
+		from = "curl"
 	} else if err != nil {
 		log.Fatal(err)
 	}
 
-	//if !res {
-	//	url, err = s.Redis.Get(url).Result()
+	log.Println("---->", from, url)
+	ch <- from + ":" + response
+}
 
-	//	log.Println("url from redis", url)
-	//	if err != nil {
-	//		log.Fatal(err)
-	//	}
-	//}
+func curl(url string) string {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err.Error()
+	}
 
-	log.Println(url, pid)
-	ch <- url
+	// Emulate reading response body.
+	defer resp.Body.Close()
+	_, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Println(err)
+		return "Internal server error"
+	}
+
+	//return "Response content"
+	return url
 }
