@@ -28,26 +28,28 @@ func main() {
 
 	defer conn.Close()
 
-	client := pb.NewStreamClient(conn)
-	request := &pb.Request{}
-
 	for i := 0; i < 100; i++ {
-		response, err := client.GetRandomDataStream(context.Background(), request)
-		if err != nil {
-			grpclog.Fatalf("fail to dial: %v", err)
-		}
+		go func() {
+			request := &pb.Request{}
+			client := pb.NewStreamClient(conn)
 
-		for {
-			r, err := response.Recv()
+			response, err := client.GetRandomDataStream(context.Background(), request)
 			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				grpclog.Fatalf("fail to read response: %v", err)
+				grpclog.Fatalf("fail to dial: %v", err)
 			}
 
-			fmt.Println(r.Message)
-		}
+			for {
+				r, err := response.Recv()
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					grpclog.Fatalf("fail to read response: %v", err)
+				}
+
+				fmt.Println(r.Message)
+			}
+		}()
 	}
 
 }

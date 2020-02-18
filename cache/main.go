@@ -17,7 +17,10 @@ import (
 	"google.golang.org/grpc/grpclog"
 )
 
-const queue string = "queue"
+const (
+	queue  string = "queue"
+	worker string = "processing_queue"
+)
 
 type server struct {
 	MaxTimeout       int
@@ -26,6 +29,8 @@ type server struct {
 	URLs             []string
 
 	Redis *redis.Client
+
+	queue chan string
 }
 
 func main() {
@@ -38,14 +43,16 @@ func main() {
 	opts := []grpc.ServerOption{}
 	grpcServer := grpc.NewServer(opts...)
 
-	srv := &server{}
-	srv.Init()
+	srv := initServer()
 
 	pb.RegisterStreamServer(grpcServer, srv)
 	grpcServer.Serve(listener)
 }
 
-func (s *server) Init() {
+// Init ...
+func initServer() *server {
+
+	s := &server{}
 
 	viper.SetConfigName("config") // Name of config file (without extension)
 	viper.SetConfigType("yaml")   // REQUIRED if the config file does not have the extension in the name
@@ -75,11 +82,19 @@ func (s *server) Init() {
 	s.Redis = client
 
 	rand.Seed(time.Now().Unix()) // Initialize global pseudo random generator.
+
+	s.queue = make(chan string)
+	urls := make(chan string)
+
+	go s.processQueue(urls)
+	go s.worker(urls)
+
+	return s
 }
 
 func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDataStreamServer) error {
 
-	defer log.Println("Done")
+	// defer log.Println("Done")
 
 	ch := make(chan string)
 
@@ -97,61 +112,87 @@ func (s *server) GetRandomDataStream(r *pb.Request, stream pb.Stream_GetRandomDa
 	return nil
 }
 
+// Init queue watcher.
+func (s *server) processQueue(urls chan<- string) {
+	for url := range s.queue {
+
+		cnt, err := s.Redis.LLen(worker).Result()
+		if err != nil || cnt > 0 {
+			continue
+		}
+
+		s.Redis.LPush(queue, url)
+
+		u, err := s.Redis.BRPopLPush(queue, worker, time.Duration(time.Second*1)).Result()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		//log.Println("Add to worker queue", url)
+
+		urls <- u
+	}
+}
+
+func (s *server) worker(urls <-chan string) {
+	for url := range urls {
+		err := s.Redis.Get(url).Err()
+		if err == redis.Nil {
+			s.setCache(url)
+		} else if err != nil {
+			log.Fatal(err)
+		}
+
+		err = s.Redis.LPop(worker).Err()
+		if err != nil {
+			log.Fatal(err)
+		}
+		//log.Println("Remove from worker queue", res, err)
+	}
+
+	log.Println("how?")
+}
+
+// Set record to redis with expiration time.
+func (s *server) setCache(url string) string {
+	response := curl(url)
+	ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
+
+	if err := s.Redis.SetNX(url, response, time.Duration(ttl)).Err(); err != nil {
+		return err.Error()
+	}
+
+	return response
+}
+
 func (s *server) processData(ch chan<- string) {
 
 	from := "redis cache"
 
 	// Can produce 2-3 requests with the same URL
-	// which will deadlock queue handler
+	// which will deadlock queue handler.
 	url := s.URLs[rand.Intn(len(s.URLs))]
 
+LOOP:
 	// Check if record exist in cache.
 	response, err := s.Redis.Get(url).Result()
 	if err == redis.Nil {
-
-	LOOP:
-		// Check queue
-		ok, err := s.Redis.SIsMember(queue, url).Result()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// Start DDOS
-		if ok {
-			time.Sleep(time.Second * 1)
-			//log.Println("Already in queue", url)
-			goto LOOP
-		}
-
-		// todo check 1/0/err
-		// log.Println("Add to queue", url)
-		res, err := s.Redis.SAdd(queue, url).Result()
-		if err != nil || res == 0 {
-			goto LOOP
-		}
-
-		response = curl(url)
-		ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
-
-		// Set record to redis with expiration time.
-		if err := s.Redis.SetNX(url, response, time.Duration(ttl)).Err(); err != nil {
-			response = err.Error()
-		}
-
-		// todo check 1/0/err
-		//log.Println("Remove from queue", url)
-		s.Redis.SRem(queue, url)
-
-		from = "curl"
+		from = queue
+		s.queue <- url
+		goto LOOP
 	} else if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Println("---->", from, url)
+	//log.Println("---->", from, url)
 	ch <- from + ":" + response
 }
 
 func curl(url string) string {
+
+	log.Println("Curl: ", url)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return err.Error()
