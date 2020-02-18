@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
+	"strconv"
+	"sync"
 
 	pb "github.com/dgor1n/grpc-cache/proto"
 
@@ -28,10 +29,15 @@ func main() {
 
 	defer conn.Close()
 
-	for i := 0; i < 100; i++ {
-		go func() {
+	client := pb.NewStreamClient(conn)
+	wg := sync.WaitGroup{}
+
+	for i := 0; i < 1000; i++ {
+		go func(i int) {
+
+			wg.Add(1)
+
 			request := &pb.Request{}
-			client := pb.NewStreamClient(conn)
 
 			response, err := client.GetRandomDataStream(context.Background(), request)
 			if err != nil {
@@ -47,9 +53,12 @@ func main() {
 					grpclog.Fatalf("fail to read response: %v", err)
 				}
 
-				fmt.Println(r.Message)
+				log.Println(strconv.Itoa(i) + ": " + r.Message)
 			}
-		}()
+
+			wg.Done()
+		}(i)
 	}
 
+	wg.Wait()
 }
