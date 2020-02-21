@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io/ioutil"
 	"log"
 	"math/rand"
@@ -171,7 +172,16 @@ func (s *server) setCache(url string) {
 
 // curl returns specified URL data.
 func curl(url string) string {
-	resp, err := http.Get(url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err.Error()
+	}
+
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return err.Error()
 	}
