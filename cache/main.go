@@ -17,11 +17,7 @@ import (
 	"google.golang.org/grpc/grpclog"
 )
 
-const (
-	queue           string = "queue"
-	queueProcessing string = "queue_processing"
-	queueDone       string = "queue_done"
-)
+const queue string = "q"
 
 type server struct {
 	MaxTimeout       int
@@ -30,8 +26,6 @@ type server struct {
 	URLs             []string
 
 	Redis *redis.Client
-
-	queue chan string
 }
 
 func main() {
@@ -50,7 +44,7 @@ func main() {
 	grpcServer.Serve(listener)
 }
 
-// Initialize server's configuration.
+// Initialize server configuration.
 func initServer() *server {
 
 	s := &server{}
@@ -82,11 +76,8 @@ func initServer() *server {
 	}
 
 	s.Redis = client
-	s.queue = make(chan string)
 
 	rand.Seed(time.Now().Unix()) // Initialize global pseudo random generator.
-
-	go s.processQueue()
 
 	return s
 }
@@ -116,14 +107,33 @@ func (s *server) processURL(ch chan<- string) {
 	url := s.URLs[rand.Intn(len(s.URLs))] // Get random URL.
 
 LOOP:
-	// Check if record exist in the redis cache.
+
 	response, err := s.Redis.Get(url).Result()
 	if err == redis.Nil {
-		// If records does not exist, add URL
-		// to the queue sand repeat checking.
-		s.queue <- url
-		time.Sleep(time.Millisecond * 1)
+		// Check if URL exists in the queue.
+		exist, err := s.Redis.SIsMember(queue, url).Result()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if !exist {
+			// Add url to the queue and start processing.
+			res, err := s.Redis.SAdd(queue, url).Result()
+			if err != nil || res == 0 {
+				goto LOOP
+			}
+
+			if !s.checkCache(url) {
+				s.setCache(url)
+			}
+
+			if err := s.Redis.SRem(queue, url).Err(); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		goto LOOP
+
 	} else if err != nil {
 		log.Fatal(err)
 	}
@@ -131,69 +141,16 @@ LOOP:
 	ch <- response
 }
 
-// Init queue watcher.
-func (s *server) processQueue() {
-LOOP:
-	for url := range s.queue {
-
-		// Get number of URLs in the main queue.
-		//cnt, err := s.Redis.LLen(worker).Result()
-		//if err != nil || cnt > 0 {
-		//	log.Println(err, cnt)
-		//	continue
-		//}
-
-		urls, err := s.Redis.LRange(queueProcessing, 0, -1).Result()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		for i := range urls {
-			if urls[i] == url {
-				time.Sleep(time.Millisecond * 1)
-				goto LOOP
-			}
-		}
-
-		// Add URL to the queue.
-		if err := s.Redis.LPush(queue, url).Err(); err != nil {
-			log.Println(err)
-			continue
-		}
-
-		// Blocking read from the main queue and pushing
-		// to the worker queue (queue_processing).
-		res, err := s.Redis.BRPopLPush(queue, queueProcessing, time.Duration(time.Second*1)).Result()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		if res != url {
-			log.Fatal(res, url) // Something bad just happened.
-		}
-
-		go s.worker(url)
-	}
-}
-
-// Worker recieves URL for processing from queue_processing.
-// First it checks if URL exist in the cache.
-// If not, worker starts processing.
-func (s *server) worker(url string) {
-	err := s.Redis.Get(url).Err()
-	if err == redis.Nil {
-		s.setCache(url)
-	} else if err != nil {
-		log.Fatal(err)
-	}
-
-	// Remove URL from queue_processing.
-	err = s.Redis.LPop(queueProcessing).Err()
+// checkCache returns true if URL exists in the cache.
+func (s *server) checkCache(url string) bool {
+	res, err := s.Redis.Exists(url).Result()
 	if err != nil {
 		log.Fatal(err)
+	} else if res == 0 {
+		return false
 	}
+
+	return true
 }
 
 // Set URL data to redis with expiration time.
@@ -202,18 +159,18 @@ func (s *server) setCache(url string) {
 	response := curl(url)
 
 	// TTL in ns
-	ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout) * 1000 * 1000 * 1000
+	ttl := (rand.Intn(s.MaxTimeout-s.MinTimeout+1) + s.MinTimeout)
+	ttlns := ttl * 1000 * 1000 * 1000
 
-	if err := s.Redis.SetNX(url, response, time.Duration(ttl)).Err(); err != nil {
+	if err := s.Redis.SetNX(url, response, time.Duration(ttlns)).Err(); err != nil {
 		log.Fatal(err)
 	}
+
+	log.Println("curl:", url, "TTL:", ttl)
 }
 
 // curl returns specified URL data.
 func curl(url string) string {
-
-	log.Println("Curl: ", url)
-
 	resp, err := http.Get(url)
 	if err != nil {
 		return err.Error()
@@ -227,5 +184,5 @@ func curl(url string) string {
 		return "Internal server error"
 	}
 
-	return url
+	return url + ": Success!"
 }
